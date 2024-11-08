@@ -5,55 +5,84 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 import pandas as pd
+from datetime import datetime, timedelta
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.consumption import ConsumptionManagementClient
-from azure.mgmt.consumption.models import BillingPeriodName
 from dotenv import load_dotenv
 
 # 加载环境变量
 load_dotenv()
 
-# 初始化DefaultAzureCredential，用于身份验证
+# Azure 认证和客户端初始化
 credential = DefaultAzureCredential()
-
-# 创建ConsumptionManagementClient实例
 subscription_id = os.getenv('AZURE_SUBSCRIPTION_ID')
 consumption_client = ConsumptionManagementClient(credential, subscription_id)
 
-def get_latest_billing_period(consumption_client):
-    # 获取最新的账单周期
-    billing_periods = consumption_client.billing_periods.list()
-    latest_billing_period = max(billing_periods, key=lambda x: x.billing_period_end_date) if billing_periods else None
-    return latest_billing_period
+def get_usage_details_for_last_month(consumption_client):
+    # 获取上个月的起始和结束日期
+    end_date = datetime.utcnow().replace(day=1)  # 当前月的第一天
+    start_date = (end_date - timedelta(days=1)).replace(day=1)  # 上个月的第一天
 
-def save_usage_details_to_csv(consumption_client, billing_period_name):
-    # 获取指定账单周期内的使用详情
-    usage_details = consumption_client.usage_details.list_by_billing_period(billing_period_name=billing_period_name)
-    usage_list = list(usage_details)  # 将生成器转换为列表
-    df = pd.DataFrame([vars(detail) for detail in usage_list])  # 将使用详情转换为DataFrame
-    csv_file_path = 'azure_usage_details.csv'  # 定义CSV文件路径
-    df.to_csv(csv_file_path, index=False)  # 保存DataFrame到CSV文件
-    return csv_file_path
+    # 获取上个月的使用详情
+    try:
+        usage_details = consumption_client.usage_details.list(
+            scope=f"/subscriptions/{subscription_id}",
+            expand="properties/additionalInfo",
+            filter=f"properties/usageEnd ge '{start_date}' and properties/usageEnd lt '{end_date}'"
+        )
+        usage_list = list(usage_details)
+        df = pd.DataFrame([vars(detail) for detail in usage_list])
+        csv_file_path = 'azure_usage_details.csv'
+        df.to_csv(csv_file_path, index=False)
+        return csv_file_path
+    except Exception as e:
+        print(f"Failed to retrieve usage details: {e}")
+        return None
 
 def send_email_with_attachment(csv_file_path):
-    # 发送带有附件的电子邮件（实现与之前的代码相同）
-    # ...（省略了发送邮件的代码，以保持简洁）
-    pass  # 请在这里实现发送邮件的逻辑
+    # SMTP 配置信息
+    smtp_server = os.getenv("SMTP_SERVER")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    sender_email = os.getenv("SENDER_EMAIL")
+    receiver_email = os.getenv("RECEIVER_EMAIL")
+    subject = "Azure Usage Details CSV"
+
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = receiver_email
+        msg['Subject'] = subject
+
+        # 邮件正文
+        body = "Please find the attached Azure usage details."
+        msg.attach(MIMEText(body, 'plain'))
+
+        # 添加 CSV 文件附件
+        with open(csv_file_path, 'rb') as attachment:
+            part = MIMEBase('application', 'octet-stream')
+            part.set_payload(attachment.read())
+            encoders.encode_base64(part)
+            part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(csv_file_path)}')
+            msg.attach(part)
+
+        # 发送邮件
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(sender_email, receiver_email, msg.as_string())
+        print("Email sent successfully.")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
 
 def main():
-    latest_billing_period = get_latest_billing_period(consumption_client)
-    if latest_billing_period:
-        billing_period_name = BillingPeriodName(latest_billing_period.name)  # 创建BillingPeriodName对象（如果需要的话，根据API要求）
-        # 注意：有时API可能直接接受字符串作为账单周期名称，而不是BillingPeriodName对象
-        # 如果API不接受BillingPeriodName对象，请直接传递字符串：billing_period_name = latest_billing_period.name
-        csv_file_path = save_usage_details_to_csv(consumption_client, billing_period_name)
-        # 发送邮件（请在这里调用send_email_with_attachment函数的实现）
-        # send_email_with_attachment(csv_file_path)
-        print("CSV file created successfully.")
-        # 注意：为了安全起见，不要在main函数中直接发送邮件，特别是在生产环境中。
-        # 应该在确认CSV文件创建成功后，手动或通过其他安全方式触发邮件发送。
+    csv_file_path = get_usage_details_for_last_month(consumption_client)
+    if csv_file_path:
+        send_email_with_attachment(csv_file_path)
+        print("CSV file created and email sent successfully.")
     else:
-        print("No latest billing period found.")
+        print("Failed to create CSV file.")
 
 if __name__ == "__main__":
     main()
