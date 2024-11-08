@@ -7,7 +7,6 @@ from email import encoders
 import pandas as pd
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.consumption import ConsumptionManagementClient
-from azure.mgmt.consumption.models import BillingPeriodName
 
 # 初始化DefaultAzureCredential，用于身份验证
 credential = DefaultAzureCredential()
@@ -17,8 +16,8 @@ subscription_id = '你的订阅ID'  # 替换为你的Azure订阅ID
 consumption_client = ConsumptionManagementClient(credential, subscription_id)
 
 # 获取最新的账单周期
-billing_periods = consumption_client.billing_periods.list()
-latest_billing_period = next((period for period in billing_periods if period.billing_period_name == BillingPeriodName.LATEST), None)
+billing_periods = consumption_client.charges.list()
+latest_billing_period = max(billing_periods, key=lambda x:x.end_date)
 
 # 配置邮件发送
 smtp_server = 'smtp.example.com'  # 替换为你的SMTP服务器地址
